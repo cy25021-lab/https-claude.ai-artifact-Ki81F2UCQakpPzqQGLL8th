@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SHOWREEL — 15秒コード・モーショングラフィックス</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Space+Mono:wght@700&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;background:#000;color:#fff;overflow:hidden;font-family:"Space Mono",ui-monospace,monospace}
+  #stage{position:absolute;left:50%;top:50%;width:min(100vw,calc(100vh*16/9));aspect-ratio:16/9;transform:translate(-50%,-50%);background:#000}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  #start{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:rgba(0,0,0,.35);cursor:pointer;z-index:5;text-align:center}
+  #start .btn{font-family:"Archivo Black",Impact,sans-serif;font-size:clamp(20px,4vw,44px);background:#FF481B;color:#000;padding:.35em 1em;border-radius:999px;letter-spacing:.04em}
+  #start small{opacity:.8;font-size:clamp(10px,1.4vw,14px)}
+  #hud{position:absolute;left:0;right:0;bottom:0;display:flex;gap:10px;align-items:center;padding:10px 14px;background:linear-gradient(transparent,rgba(0,0,0,.65));z-index:4;opacity:0;transition:opacity .25s}
+  #stage:hover #hud,#hud.show{opacity:1}
+  #hud button{background:#FF481B;border:0;color:#000;font:inherit;font-size:13px;padding:6px 12px;border-radius:6px;cursor:pointer}
+  #hud input{flex:1;accent-color:#FF481B}
+  #time{font-size:12px;min-width:84px;text-align:right}
+  #err{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:24px;z-index:9;background:#000;font-size:14px}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c"></canvas>
+  <div id="start"><div class="btn">▶ PLAY</div><small>音あり（Web Audioでコード生成）／ Space で再生・停止</small></div>
+  <div id="hud"><button id="pp">⏸</button><input id="seek" type="range" min="0" max="15" step="0.01" value="0"><span id="time">0.00 / 15.00</span></div>
+  <div id="err">three.js を読み込めませんでした。ネットワークを確認して再読み込みしてください。</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ============ 編集するところ ============ */
+const CFG = {
+  name:   "YAMASAKI TADASHI",
+  roles:  ["SHIBAURA INSTITUTE OF TECHNOLOGY", "DESIGN", "ENGINEER"],
+  tag:    "PORTFOLIO 2026",
+  accent: "#FF481B"
+};
+/* ======================================== */
+
+if (typeof THREE === "undefined") { document.getElementById("err").style.display = "flex"; throw new Error("three missing"); }
+
+const DUR = 15, BPM = 160, B = 60 / BPM;           // 160BPM x 40拍 = 15秒
+const ACC = new THREE.Color(CFG.accent);
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const easeOut = x => 1 - Math.pow(1 - clamp(x), 3);
+const easeInOut = x => { x = clamp(x); return x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+const easeOutBack = x => { x = clamp(x); const c = 1.70158 + 1; return 1 + c * Math.pow(x - 1, 3) + 1.70158 * Math.pow(x - 1, 2); };
+function rnd(seed) { let s = seed; return () => (s = (s * 16807) % 2147483647) / 2147483647; }
+
+/* ---------- renderer / post ---------- */
+const stage = document.getElementById("stage"), canvas = document.getElementById("c");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+let rt = new THREE.WebGLRenderTarget(16, 16, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
+
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(60, 16 / 9, .1, 400);
+const uiScene = new THREE.Scene();
+const uiCam = new THREE.OrthographicCamera(-16 / 9, 16 / 9, 1, -1, -10, 10);
+
+const post = new THREE.ShaderMaterial({
+  uniforms: { tDiffuse: { value: null }, time: { value: 0 }, aber: { value: 0 }, glitch: { value: 0 }, flash: { value: 0 }, vig: { value: .5 } },
+  vertexShader: "varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position.xy,0.,1.); }",
+  fragmentShader: `
+    precision highp float; varying vec2 vUv; uniform sampler2D tDiffuse; uniform float time,aber,glitch,flash,vig;
+    float h(float n){ return fract(sin(n*91.345)*47453.5453); }
+    void main(){
+      vec2 uv=vUv;
+      float row=floor(uv.y*38.+floor(time*24.));
+      float on=step(1.-glitch*.55,h(row));
+      uv.x+=(h(row+7.)-.5)*.12*on*glitch*2.;
+      vec2 d=(uv-.5)*aber;
+      vec3 c=vec3(texture2D(tDiffuse,uv+d).r,texture2D(tDiffuse,uv).g,texture2D(tDiffuse,uv-d).b);
+      c+=on*glitch*.15*vec3(h(row+3.),h(row+5.),h(row+9.));
+      c*=1.-.06*sin(uv.y*900.);
+      float g=h(dot(uv,vec2(12.9898,78.233))+time)*.06; c+=g-.03;
+      float v=smoothstep(.95,.25,length(uv-.5)); c*=mix(1.,v,vig);
+      c+=flash; gl_FragColor=vec4(c,1.);
+    }`,
+  depthTest: false, depthWrite: false
+});
+const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), post);
+const postScene = new THREE.Scene(); postScene.add(postQuad);
+const postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  renderer.setSize(w, h, false);
+  const pr = renderer.getPixelRatio();
+  rt.setSize(Math.floor(w * pr), Math.floor(h * pr));
+}
+window.addEventListener("resize", resize); resize();
+
+/* ---------- lights ---------- */
+scene.add(new THREE.AmbientLight(0xffffff, .35));
+const lA = new THREE.PointLight(ACC, 2.2, 60); lA.position.set(4, 3, 5); scene.add(lA);
+const lB = new THREE.PointLight(0x35e0ff, 1.8, 60); lB.position.set(-5, -2, 4); scene.add(lB);
+
+/* ---------- text helper (UI scene) ---------- */
+function textMesh(str, o = {}) {
+  const font = '900 200px "Archivo Black", Impact, sans-serif';
+  const m = document.createElement("canvas").getContext("2d"); m.font = font;
+  const w = Math.ceil(m.measureText(str).width) + 80, h = 300;
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  const g = cv.getContext("2d"); g.font = font; g.textBaseline = "middle"; g.textAlign = "center";
+  if (o.stroke) { g.lineWidth = 8; g.strokeStyle = o.color || "#fff"; g.lineJoin = "round"; g.strokeText(str, w / 2, h / 2 + 8); }
+  else { g.fillStyle = o.color || "#fff"; g.fillText(str, w / 2, h / 2 + 8); }
+  const tex = new THREE.CanvasTexture(cv); tex.minFilter = THREE.LinearFilter; tex.anisotropy = 4;
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
+  const size = o.size || .5;
+  mesh.userData = { base: size, ar: w / h, fit: o.fit || 3.1 };
+  let wd = size * (w / h); if (wd > mesh.userData.fit) { mesh.userData.base = size * mesh.userData.fit / wd; }
+  mesh.scale.set(mesh.userData.base * (w / h), mesh.userData.base, 1);
+  mesh.visible = false; uiScene.add(mesh); return mesh;
+}
+/* 表示ウィンドウ [a,b) でスラム登場 */
+function slam(mesh, t, a, b, o = {}) {
+  const on = t >= a && t < b; mesh.visible = on; if (!on) return;
+  const k = easeOutBack((t - a) / .16), s = (o.from || 1.7) + (1 - (o.from || 1.7)) * k;
+  const bp = ((t / B) % 1), pulse = Math.exp(-bp * 6) * (o.beat ?? .06);
+  const sc = s * (1 + pulse);
+  mesh.scale.set(mesh.userData.base * mesh.userData.ar * sc, mesh.userData.base * sc, 1);
+  mesh.position.set(o.x || 0, o.y || 0, 0); mesh.rotation.z = o.rot || 0;
+  mesh.material.opacity = clamp((b - t) / .06) * clamp((t - a) / .04 + .3);
+}
+
+/* ---------- Scene 1 : wire ⇄ shaded icosahedron ---------- */
+const g1 = new THREE.Group(); scene.add(g1);
+const icoGeo = new THREE.IcosahedronGeometry(1.5, 2);
+const mats1 = [
+  new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true }),
+  new THREE.MeshPhongMaterial({ color: ACC, specular: 0xffffff, shininess: 90, flatShading: true }),
+  new THREE.MeshBasicMaterial({ color: 0xffffff }),
+  new THREE.MeshPhongMaterial({ color: 0x111116, specular: 0xffffff, shininess: 140, flatShading: true })
+];
+const ico = new THREE.Mesh(icoGeo, mats1[0]); g1.add(ico);
+const ring1 = new THREE.Mesh(new THREE.TorusGeometry(2.3, .02, 8, 120), new THREE.MeshBasicMaterial({ color: ACC })); g1.add(ring1);
+const ring2 = ring1.clone(); ring2.scale.set(1.25, 1.25, 1.25); g1.add(ring2);
+{ const r = rnd(7), p = new Float32Array(900); for (let i = 0; i < 300; i++) { const a = r() * 6.283, b = Math.acos(2 * r() - 1), d = 3 + r() * 5; p[i*3] = d * Math.sin(b) * Math.cos(a); p[i*3+1] = d * Math.sin(b) * Math.sin(a); p[i*3+2] = d * Math.cos(b); }
+  const gg = new THREE.BufferGeometry(); gg.setAttribute("position", new THREE.BufferAttribute(p, 3));
+  var dust = new THREE.Points(gg, new THREE.PointsMaterial({ color: 0xffffff, size: .04 })); g1.add(dust); }
+
+/* ---------- Scene 2 : tunnel ---------- */
+const g2 = new THREE.Group(); scene.add(g2);
+const rings2 = [], ringMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+for (let i = 0; i < 44; i++) { const m = new THREE.Mesh(new THREE.TorusGeometry(2.6, .05, 6, i % 2 ? 6 : 48), ringMat); m.position.z = -i * 3; m.userData.i = i; g2.add(m); rings2.push(m); }
+const panels = new THREE.InstancedMesh(new THREE.BoxGeometry(.18, .18, 1.6), new THREE.MeshBasicMaterial({ color: 0xffffff }), 160);
+{ const r = rnd(21), dm = new THREE.Object3D(); for (let i = 0; i < 160; i++) { const a = r() * 6.283, rad = 2.5 + r() * .5; dm.position.set(Math.cos(a) * rad, Math.sin(a) * rad, -r() * 130); dm.rotation.z = a; dm.scale.set(1 + r() * 3, 1, .5 + r() * 2); dm.updateMatrix(); panels.setMatrixAt(i, dm.matrix); } }
+g2.add(panels);
+
+/* ---------- Scene 3 : city grid ---------- */
+const g3 = new THREE.Group(); scene.add(g3);
+const GX = 30, GZ = 18;
+const grid = new THREE.InstancedMesh(new THREE.BoxGeometry(.78, 1, .78), new THREE.MeshPhongMaterial({ color: 0x15151c, specular: 0xffffff, shininess: 80 }), GX * GZ);
+const gridTop = new THREE.InstancedMesh(new THREE.BoxGeometry(.8, .06, .8), new THREE.MeshBasicMaterial({ color: ACC }), GX * GZ);
+g3.add(grid, gridTop);
+const dm = new THREE.Object3D();
+
+/* ---------- Scene 4 : build → break ---------- */
+const g4 = new THREE.Group(); scene.add(g4);
+const N4 = 420, cubes = new THREE.InstancedMesh(new THREE.BoxGeometry(.28, .28, .28), new THREE.MeshPhongMaterial({ color: ACC, specular: 0xffffff, shininess: 80, flatShading: true }), N4);
+g4.add(cubes);
+const T4 = [], S4 = [], D4 = [];
+{ const r = rnd(99); for (let i = 0; i < N4; i++) { const y = 1 - 2 * (i + .5) / N4, rad = Math.sqrt(1 - y * y), th = i * 2.399963;
+  const dir = new THREE.Vector3(Math.cos(th) * rad, y, Math.sin(th) * rad); D4.push(dir); T4.push(dir.clone().multiplyScalar(1.6));
+  S4.push(new THREE.Vector3((r() - .5) * 30, (r() - .5) * 18, (r() - .5) * 20 - 4)); } }
+const halo = new THREE.Mesh(new THREE.TorusGeometry(2.7, .03, 8, 120), new THREE.MeshBasicMaterial({ color: 0xffffff })); g4.add(halo);
+
+/* ---------- UI: wipes / bars / text ---------- */
+const wipe = new THREE.Mesh(new THREE.PlaneGeometry(1, 2.2), new THREE.MeshBasicMaterial({ color: ACC, depthTest: false })); wipe.position.z = 1; wipe.material.transparent = true; wipe.renderOrder = 10; wipe.visible = false; uiScene.add(wipe);
+const wipe2 = new THREE.Mesh(new THREE.PlaneGeometry(1, 2.2), new THREE.MeshBasicMaterial({ color: 0x000000, depthTest: false })); wipe2.position.z = .9; wipe2.material.transparent = true; wipe2.renderOrder = 11; wipe2.visible = false; uiScene.add(wipe2);
+const bar = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false })); bar.visible = false; uiScene.add(bar);
+const disc = new THREE.Mesh(new THREE.CircleGeometry(1, 64), new THREE.MeshBasicMaterial({ color: ACC, depthTest: false })); disc.visible = false; uiScene.add(disc);
+const line5 = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0x000000, depthTest: false })); line5.visible = false; uiScene.add(line5);
+
+let TXT = null;
+function buildText() {
+  TXT = {
+    w1: [textMesh("CODE", { size: .9 }), textMesh("PLAY", { size: .9, stroke: true }), textMesh("MAKE", { size: .9 })],
+    w2: [textMesh("NO ASSETS.", { size: .78, color: "#000", fit: 3.2 }), textMesh("ALL CODE.", { size: .95, color: "#fff", fit: 3.2 })],
+    w3: CFG.roles.map((r, i) => textMesh(r, { size: 1.05, stroke: i === 1, color: i === 1 ? "#fff" : "#fff" })),
+    w4: [textMesh("IDEA", { size: .7, stroke: true }), textMesh("BUILD", { size: .8 }), textMesh("SHIP", { size: .9, color: CFG.accent })],
+    name: textMesh(CFG.name.toUpperCase(), { size: .62, color: "#000", fit: 3.1 }),
+    role: textMesh(CFG.roles.join("  /  "), { size: .16, color: "#000", fit: 2.4 }),
+    tag: textMesh(CFG.tag, { size: .1, color: "#000", fit: 1.4 })
+  };
+}
+
+/* ---------- timeline render ---------- */
+const CUTS = [3, 6, 9, 12];
+const BG = [0x050507, ACC, 0x07070b, 0x0a0a12, 0xf4f1ea];
+
+function frame(t) {
+  t = clamp(t, 0, DUR);
+  const beat = t / B, bp = beat % 1, pulse = Math.exp(-bp * 5.5), bi = Math.floor(beat);
+  const sc = t < 3 ? 0 : t < 6 ? 1 : t < 9 ? 2 : t < 12 ? 3 : 4;
+  g1.visible = sc === 0; g2.visible = sc === 1; g3.visible = sc === 2; g4.visible = sc === 3;
+  renderer.setClearColor(BG[sc], 1);
+  let shake = pulse * .02, aber = .002 + pulse * .004, glitch = 0, flash = 0, vig = .55;
+  cam.fov = 60; cam.position.set(0, 0, 6); cam.rotation.set(0, 0, 0); cam.up.set(0, 1, 0);
+  lA.intensity = 2.2; lB.intensity = 1.8;
+  if (TXT) { Object.values(TXT).flat().forEach(m => m.visible = false); }
+  disc.visible = line5.visible = bar.visible = false;
+
+  if (sc === 0) { /* ---- S1 ---- */
+    const mode = t < .8 ? 0 : Math.floor((t - .8) / B) % 4;
+    ico.material = mats1[mode];
+    const gs = easeOutBack((t - .55) / .5); ico.scale.setScalar(Math.max(.001, gs) * (1 + pulse * .12));
+    ico.rotation.set(t * .6 + pulse * .3, t * .9, 0);
+    ring1.rotation.set(t * 1.1, t * .4, 0); ring2.rotation.set(-t * .7, t * 1.3, 1);
+    ring1.visible = ring2.visible = t > .75; dust.rotation.y = t * .2; dust.visible = t > .6;
+    cam.position.set(Math.sin(t * .8) * .6, Math.cos(t * .6) * .3, 5.4 - t * .35);
+    cam.lookAt(0, 0, 0);
+    if (TXT) { slam(TXT.w1[0], t, .75, 1.5, { rot: -.05 }); slam(TXT.w1[1], t, 1.5, 2.25, { rot: .04, y: .1 }); slam(TXT.w1[2], t, 2.25, 3.0, { rot: -.03 }); }
+    if (mode === 1 || mode === 3) glitch = pulse * .25;
+    // 冒頭の光の線
+    bar.visible = t < .82;
+    if (bar.visible) { const w = easeOut(t / .55) * 3.6, grow = t > .55 ? (t - .55) / .27 : 0; bar.scale.set(w, .012 + grow * grow * 2.2, 1); bar.position.set(0, 0, 2); flash = grow * grow * .5; aber = .01; }
+  } else if (sc === 1) { /* ---- S2 ---- */
+    const u = t - 3, z = -u * 37;
+    cam.position.set(Math.sin(u * 3) * .25, Math.cos(u * 2.3) * .2, z);
+    cam.fov = 72 + pulse * 14 + u * 4;
+    rings2.forEach(m => { m.rotation.z = m.userData.i * .35 + u * (m.userData.i % 2 ? 1.4 : -1.1); });
+    cam.lookAt(cam.position.x * .5, cam.position.y * .5, z - 10); cam.rotateZ(Math.sin(u * 2.2) * .12 + pulse * .04);
+    aber = .004 + pulse * .008 + u * .002; glitch = (u > 1.3 && u < 1.5) ? .5 : 0;
+    if (TXT) { slam(TXT.w2[0], t, 3.0, 4.5, { rot: -.06 }); slam(TXT.w2[1], t, 4.5, 6.0, { rot: .05, from: 2.4, beat: .09 }); }
+    shake = .02 + pulse * .03;
+  } else if (sc === 2) { /* ---- S3 ---- */
+    const u = t - 6, a = u * .38 + .4;
+    let i = 0;
+    for (let x = 0; x < GX; x++) for (let zz = 0; zz < GZ; zz++) {
+      const px = (x - GX / 2) * .9, pz = (zz - GZ / 2) * .9, d = Math.hypot(px, pz);
+      const wv = Math.sin(px * .5 + u * 3) + Math.sin(pz * .6 - u * 2.2) + 2;
+      const ring = Math.exp(-Math.pow(d - ((beat % 4) * 3.2), 2) * .25);
+      const hgt = .25 + wv * .55 + ring * 1.8 + pulse * .25;
+      dm.position.set(px, hgt / 2, pz); dm.scale.set(1, hgt, 1); dm.rotation.set(0, 0, 0); dm.updateMatrix(); grid.setMatrixAt(i, dm.matrix);
+      dm.position.set(px, hgt + .03, pz); dm.scale.set(1, 1, 1); dm.updateMatrix(); gridTop.setMatrixAt(i, dm.matrix); i++;
+    }
+    grid.instanceMatrix.needsUpdate = true; gridTop.instanceMatrix.needsUpdate = true;
+    const R = 15 - u * 1.2; cam.position.set(Math.cos(a) * R, 5.5 - u * .6 + pulse * .2, Math.sin(a) * R); cam.lookAt(0, 1, 0);
+    lA.position.set(Math.cos(a + 1) * 10, 6, Math.sin(a + 1) * 10); lB.position.set(Math.cos(a - 2) * 10, 4, Math.sin(a - 2) * 10); lA.intensity = 3; lB.intensity = 3;
+    if (TXT) TXT.w3.forEach((m, k) => slam(m, t, 6 + k, 7 + k, { rot: (k - 1) * .05, y: k === 1 ? .0 : 0 }));
+    aber = .003 + pulse * .006; glitch = (u > 2.8) ? (u - 2.8) * 1.2 : 0;
+  } else if (sc === 3) { /* ---- S4 ---- */
+    const u = t - 9, p = easeInOut(u / 1.5), boom = t >= 11.25 ? t - 11.25 : -1;
+    for (let k = 0; k < N4; k++) {
+      const s = S4[k], tg = T4[k], dir = D4[k];
+      const spike = 1 + pulse * .35 * (.5 + .5 * Math.sin(k * 1.7 + u * 6));
+      let px = s.x + (tg.x * spike - s.x) * p, py = s.y + (tg.y * spike - s.y) * p, pz = s.z + (tg.z * spike - s.z) * p, sz = 1;
+      if (boom >= 0) { const e = boom * boom * 18 + boom * 3; px += dir.x * e; py += dir.y * e; pz += dir.z * e; sz = Math.max(.001, 1 - boom * .9); }
+      dm.position.set(px, py, pz); dm.rotation.set(k + u * 2, k * 2 + u, 0); dm.scale.setScalar(sz * (.7 + p * .6)); dm.updateMatrix(); cubes.setMatrixAt(k, dm.matrix);
+    }
+    cubes.instanceMatrix.needsUpdate = true;
+    g4.rotation.set(Math.sin(u) * .3, u * .9, 0);
+    halo.visible = u > 1.3 && boom < 0; halo.rotation.set(u * 1.3, u * .8, 0); halo.scale.setScalar(1 + pulse * .1);
+    cam.position.set(0, 0, 7.5 - p * 1.2 + (boom >= 0 ? boom * 6 : 0)); cam.lookAt(0, 0, 0);
+    if (TXT) { slam(TXT.w4[0], t, 9, 9.75, { rot: -.04 }); slam(TXT.w4[1], t, 9.75, 10.5, { rot: .03 }); slam(TXT.w4[2], t, 10.5, 11.25, { rot: -.03, from: 2.2 }); }
+    glitch = boom >= 0 ? .4 + boom : pulse * .1; aber = boom >= 0 ? .02 : .003 + pulse * .005;
+    if (boom >= 0 && boom < .12) flash = (1 - boom / .12) * .7;
+  } else { /* ---- S5 ---- */
+    const u = t - 12; vig = .15; shake = 0; aber = .001 + Math.exp(-u * 4) * .02; lA.intensity = lB.intensity = 0;
+    g1.visible = g2.visible = g3.visible = g4.visible = false;
+    disc.visible = true; const dsc = easeOut(u / .55) * 1.6; disc.scale.set(dsc, dsc, 1); disc.position.set(1.1, -.05, -1);
+    if (TXT) {
+      slam(TXT.name, t, 12.35, 99, { x: -.05, y: .12, from: 1.5, beat: .012 });
+      const lw = easeOut((u - .8) / .45) * 2.3; line5.visible = lw > 0.001; line5.scale.set(lw, .012, 1); line5.position.set(-1.0 + (lw / 2) - .15 - .0, -.2, 2);
+      slam(TXT.role, t, 12.9, 99, { x: -.05, y: -.34, from: 1.2, beat: 0 });
+      slam(TXT.tag, t, 13.4, 99, { x: -1.05, y: .78, from: 1.2, beat: 0 });
+    }
+    glitch = Math.exp(-u * 6) * .6 + (bp < .06 ? .12 : 0);
+    if (u < .12) flash = (1 - u / .12) * .9;
+    // 最後の0.2秒で軽くフェード
+    if (t > 14.8) flash = -(t - 14.8) / .2 * .9;
+  }
+
+  // カット転換ワイプ（ステッカーが覆って剥がれる）
+  wipe.visible = wipe2.visible = false;
+  for (const c of CUTS) {
+    const a = c - .17, b = c + .17;
+    if (t >= a && t < b) {
+      wipe.visible = wipe2.visible = true;
+      const k = (t - a) / (b - a);
+      if (k < .5) { const w = easeInOut(k * 2) * 3.8; wipe.scale.set(w, 1, 1); wipe.position.set(-1.9 + w / 2, 0, 1); wipe2.scale.set(Math.max(.001, w - .5), 1, 1); wipe2.position.set(-1.9 + (w - .5) / 2, 0, .9); }
+      else { const w = (1 - easeInOut((k - .5) * 2)) * 3.8; wipe.scale.set(Math.max(.001, w), 1, 1); wipe.position.set(1.9 - w / 2, 0, 1); wipe2.scale.set(Math.max(.001, w - .5), 1, 1); wipe2.position.set(1.9 - (w - .5) / 2, 0, .9); }
+      glitch = Math.max(glitch, .6); aber = Math.max(aber, .015);
+    }
+  }
+
+  cam.position.x += (Math.sin(t * 90) * shake); cam.position.y += (Math.cos(t * 77) * shake);
+  cam.aspect = stage.clientWidth / stage.clientHeight; cam.updateProjectionMatrix();
+
+  post.uniforms.time.value = t; post.uniforms.aber.value = aber; post.uniforms.glitch.value = glitch; post.uniforms.flash.value = flash; post.uniforms.vig.value = vig;
+
+  renderer.autoClear = true;
+  renderer.setRenderTarget(rt); renderer.clear();
+  if (sc !== 4) renderer.render(scene, cam); else renderer.render(scene, cam);
+  renderer.autoClear = false; renderer.clearDepth(); renderer.render(uiScene, uiCam);
+  renderer.setRenderTarget(null); renderer.autoClear = true;
+  post.uniforms.tDiffuse.value = rt.texture; renderer.render(postScene, postCam);
+}
+
+/* ---------- audio（すべてWeb Audioで合成） ---------- */
+let ctx = null;
+function stopAudio() { if (ctx) { try { ctx.close(); } catch (e) {} ctx = null; } }
+function startAudio(offset) {
+  stopAudio();
+  const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return 0;
+  ctx = new AC();
+  const master = ctx.createGain(); master.gain.value = .85;
+  const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 6;
+  master.connect(comp); comp.connect(ctx.destination);
+  const nb = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate), nd = nb.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  const lead = .08, base = ctx.currentTime + lead, W = tt => base + tt - offset, ok = tt => tt >= offset - .001;
+  const env = (g, when, a, d, peak) => { g.gain.setValueAtTime(0.0001, when); g.gain.linearRampToValueAtTime(peak, when + a); g.gain.exponentialRampToValueAtTime(0.0001, when + a + d); };
+  function noise(when, dur, type, f, peak, a = .002) { const s = ctx.createBufferSource(); s.buffer = nb; const fl = ctx.createBiquadFilter(); fl.type = type; fl.frequency.value = f; const g = ctx.createGain(); env(g, when, a, dur, peak); s.connect(fl); fl.connect(g); g.connect(master); s.start(when, Math.random()); s.stop(when + dur + a + .05); }
+  function osc(when, type, f0, f1, dur, peak, lp) { const o = ctx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f0, when); if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, when + dur); const g = ctx.createGain(); env(g, when, .004, dur, peak); let n = o; if (lp) { const fl = ctx.createBiquadFilter(); fl.type = "lowpass"; fl.frequency.value = lp; o.connect(fl); n = fl; } n.connect(g); g.connect(master); o.start(when); o.stop(when + dur + .05); }
+  const kick = w => { osc(w, "sine", 160, 42, .32, 1.0); noise(w, .02, "highpass", 3000, .25); };
+  const hat = (w, v = .22) => noise(w, .045, "highpass", 8000, v);
+  const clap = w => { noise(w, .14, "bandpass", 1600, .7); noise(w + .012, .1, "bandpass", 2400, .4); };
+  const bass = (w, f, d) => osc(w, "sawtooth", f, f, d, .42, 420);
+  const arp = (w, f) => osc(w, "square", f, f, .13, .09, 3200);
+  const impact = w => { osc(w, "sine", 110, 26, .7, 1.0); noise(w, .5, "lowpass", 900, .55); };
+  const riser = (w, dur) => { const s = ctx.createBufferSource(); s.buffer = nb; s.loop = true; const fl = ctx.createBiquadFilter(); fl.type = "bandpass"; fl.Q.value = 4; fl.frequency.setValueAtTime(300, w); fl.frequency.exponentialRampToValueAtTime(7000, w + dur); const g = ctx.createGain(); g.gain.setValueAtTime(.0001, w); g.gain.linearRampToValueAtTime(.45, w + dur); g.gain.linearRampToValueAtTime(0, w + dur + .03); s.connect(fl); fl.connect(g); g.connect(master); s.start(w); s.stop(w + dur + .05); };
+
+  for (let k = 0; k < 40; k++) {
+    const tk = k * B, brk = tk >= 11.25 && tk < 12;
+    if (tk >= .75 && !brk && ok(tk)) kick(W(tk));
+    if (tk >= 1.5 && !brk) { if (ok(tk + B / 2)) hat(W(tk + B / 2)); if (tk >= 3 && tk < 9) { if (ok(tk + B / 4)) hat(W(tk + B / 4), .12); if (ok(tk + B * .75)) hat(W(tk + B * .75), .12); } }
+    if (tk >= 3 && !brk && k % 2 === 1 && ok(tk)) clap(W(tk));
+  }
+  const pat = [55, 55, 82.41, 55, 65.41, 55, 98, 82.41], pent = [220, 261.63, 293.66, 329.63, 392, 440, 523.25, 587.33];
+  for (let j = 0; j < 80; j++) {
+    const tt = j * B / 2;
+    if (tt >= 3 && tt < 11.25 && ok(tt)) bass(W(tt), pat[j % 8] * (tt >= 6 ? 1 : 1), B / 2 * .9);
+  }
+  for (let j = 0; j < 160; j++) { const tt = 9 + j * B / 4; if (tt >= 9 && tt < 11.25 && ok(tt)) arp(W(tt), pent[[0, 3, 5, 7, 5, 3, 4, 2][j % 8]] * (j % 16 >= 8 ? 1.5 : 1)); }
+  [[.75, .75], [3, 1], [6, 1], [9, 1], [12, 1]].forEach(([c, d], i) => { const st = c - d; if (st >= 0 ? ok(st) || ok(c) : ok(c)) riser(W(Math.max(0, st)), c - Math.max(0, st) ); if (i > 0 && ok(c)) impact(W(c)); });
+  if (ok(.75)) impact(W(.75));
+  if (ok(12)) { [110, 164.81, 220, 329.63].forEach(f => osc(W(12), "sawtooth", f, f, 2.6, .16, 1400)); }
+  if (ok(14.5)) { master.gain.setValueAtTime(.85, W(14.5)); master.gain.linearRampToValueAtTime(0, W(15)); }
+  return lead;
+}
+
+/* ---------- player ---------- */
+const $ = id => document.getElementById(id);
+const seek = $("seek"), timeEl = $("time"), pp = $("pp"), startEl = $("start"), hud = $("hud");
+let playing = false, held = 1.6, t0 = 0, wasPlaying = false;
+function fmt(t) { return t.toFixed(2) + " / " + DUR.toFixed(2); }
+function play(from) {
+  const lead = startAudio(from);
+  t0 = performance.now() + lead * 1000 - from * 1000; playing = true; pp.textContent = "⏸"; startEl.style.display = "none"; hud.classList.add("show");
+}
+function pause() { playing = false; stopAudio(); pp.textContent = "▶"; }
+function curT() { return playing ? clamp((performance.now() - t0) / 1000, 0, DUR) : held; }
+startEl.addEventListener("click", () => play(held >= DUR - .05 || held < 1.7 ? 0 : held));
+pp.addEventListener("click", () => { if (playing) { held = curT(); pause(); } else play(held >= DUR - .05 ? 0 : held); });
+seek.addEventListener("pointerdown", () => { wasPlaying = playing; if (playing) { held = curT(); pause(); } });
+seek.addEventListener("input", () => { held = parseFloat(seek.value); });
+seek.addEventListener("change", () => { held = parseFloat(seek.value); if (wasPlaying) play(held); });
+window.addEventListener("keydown", e => { if (e.code === "Space") { e.preventDefault(); if (startEl.style.display !== "none") startEl.click(); else pp.click(); } });
+
+function loop() {
+  requestAnimationFrame(loop);
+  const t = curT();
+  if (playing && t >= DUR) { held = DUR; pause(); }
+  if (document.activeElement !== seek) seek.value = t;
+  timeEl.textContent = fmt(t);
+  frame(t);
+}
+(document.fonts && document.fonts.load ? Promise.race([Promise.all([document.fonts.load('900 100px "Archivo Black"'), document.fonts.load('700 20px "Space Mono"')]), new Promise(r => setTimeout(r, 2500))]) : Promise.resolve())
+  .catch(() => {}).then(() => { buildText(); loop(); });
+</script>
+</body>
+</html>
